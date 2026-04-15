@@ -5,7 +5,7 @@ import { env } from "process";
 
 const hasSession = fs.existsSync("session.json");
 
-const {URL, EMAIL, PASSWORD, SESSION_STRING} = env;
+const {URL, EMAIL, PASSWORD, TG_BOT_TOKEN, TG_CHAT_ID} = env;
 
 async function checkSlots() {
   const browser = await chromium.launch({ headless: false });
@@ -96,14 +96,12 @@ async function safeGoto(page, url) {
 }
 
 async function sendTelegram(message) {
-  const TELEGRAM_TOKEN = "8206927494:AAF54280QC5j2OQSHiWiQZfpyZb7Wi8SbBk";
-  const chat_id = 503692935;
   try {
-    await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+    await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        chat_id,
+        chat_id: TG_CHAT_ID,
         text: message,
         parse_mode: "HTML",
       }),
