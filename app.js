@@ -1,100 +1,18 @@
 import { chromium } from "playwright";
 import fs from "fs";
-import { callToMain } from "./secondPhone.js";
 import { env } from "process";
+import { callToMain } from "./secondPhone.js";
 
-const hasSession = fs.existsSync("session.json");
+const { URL, EMAIL, PASSWORD, TG_BOT_TOKEN, TG_CHAT_ID } = env;
 
-const {URL, EMAIL, PASSWORD, TG_BOT_TOKEN, TG_CHAT_ID} = env;
+let browser;
+let context;
+let page;
+let lastState = "init";
 
-async function checkSlots() {
-  const browser = await chromium.launch({ headless: false });
-  const context = await browser.newContext({
-    storageState: hasSession ? "session.json" : {},
-    userAgent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    viewport: { width: 1280, height: 800 },
-    locale: "en-US",
-  });
-  const page = await context.newPage();
-
-  await safeGoto(page, URL);
-
-  if (page.url().includes("sign_in")) {
-    await login(page, context);
-    if (page.url() !== URL) await safeGoto(page, URL);
-  }
-
-  console.log("✅ Сессия работает");
-
-  const rows = await page
-    .locator(".for-layout td.text-right")
-    .allTextContents();
-
-  const allUnavailable = rows.every((text) =>
-    text.trim().includes("No Appointments Available"),
-  );
-
-  if (allUnavailable) {
-    console.log("❌ слотов нет");
-  } else {
-    console.log("🚨 ЕСТЬ СЛОТЫ!");
-    callToMain()
-    await sendTelegram("🚨 <b>ЕСТЬ СЛОТЫ!</b>\nОткрывай сайт СРОЧНО!");
-  }
-
-  await browser.close();
-}
-
-async function login(page, context) {
-  console.log("❌ Сессия умерла → перелогин");
-  await sendTelegram("🔐 Сессия умерла → перелогин");
-  console.log("🔐 Логинимся...");
-
-  await page.goto("https://ais.usvisa-info.com/en-it/niv/users/sign_in", {
-    waitUntil: "domcontentloaded",
-  });
-
-  await page.fill("#user_email", EMAIL);
-  await page.fill("#user_password", PASSWORD);
-
-  await page.locator(".icheckbox").click();
-
-  await Promise.all([
-    page.waitForURL((url) => !url.href.includes("sign_in")),
-    page.click('input[name="commit"]'),
-  ]);
-
-  console.log("✅ Успешный логин:", page.url());
-
-  // даём время на установку cookies
-  await page.waitForTimeout(3000);
-
-  // 🔥 обновляем сессию
-  await context.storageState({ path: "session.json" });
-
-  console.log("💾 session.json обновлён");
-
-  return true;
-}
-
-
-async function safeGoto(page, url) {
-  for (let i = 0; i < 3; i++) {
-    try {
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
-      return;
-    } catch (e) {
-      console.log(`⚠️ goto failed (${i + 1}/3):`, e.message);
-      await sendTelegram(`⚠️ Ошибка goto (${i + 1}/3): ${e.message}`);
-      await page.waitForTimeout(2000);
-    }
-  }
-
-  await sendTelegram("❌ <b>Страница не загрузилась после 3 попыток</b>");
-  throw new Error("❌ Страница не загрузилась после 3 попыток");
-}
-
+// -------------------------
+// 📩 Telegram
+// -------------------------
 async function sendTelegram(message) {
   try {
     await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage`, {
@@ -107,17 +25,215 @@ async function sendTelegram(message) {
       }),
     });
   } catch (err) {
-    console.log("⚠️ Ошибка отправки в Telegram:", err.message);
+    console.log("⚠️ Telegram error:", err.message);
   }
 }
 
-function startLoop() {
-  const delay = (7 + Math.random() * 3) * 60 * 1000; // 7–10 минут
+// -------------------------
+// 🧠 Имитация человека
+// -------------------------
+async function humanize(page) {
+  try {
+    // случайное движение мыши
+    await page.mouse.move(
+      100 + Math.random() * 500,
+      100 + Math.random() * 400,
+      { steps: 5 },
+    );
 
-  checkSlots().then(() => {
-    console.log(`⏳ следующий чек через ${Math.round(delay / 60000)}`);
-    setTimeout(startLoop, delay);
-  });
+    await page.waitForTimeout(300 + Math.random() * 700);
+
+    // иногда скролл
+    if (Math.random() > 0.5) {
+      await page.mouse.wheel(0, 200 + Math.random() * 400);
+    }
+
+    await page.waitForTimeout(300 + Math.random() * 1000);
+  } catch {}
 }
-startLoop();
-await sendTelegram("🚀 <b>Старт программы</b>");
+
+// -------------------------
+// 🌐 Safe goto
+// -------------------------
+async function safeGoto(url) {
+  for (let i = 0; i < 5; i++) {
+    try {
+      await page.goto(url, {
+        waitUntil: "domcontentloaded",
+        timeout: 60000,
+      });
+      return true;
+    } catch (e) {
+      console.log(
+        `⚠️ goto retry ${i + 1}:`,
+        e.message,
+        new Date().toLocaleString(),
+      );
+      await sendTelegram(`⚠️ goto retry ${i + 1}:`, JSON.stringify(e.message));
+      await page.waitForTimeout(2000 + Math.random() * 2000);
+    }
+  }
+  return false;
+}
+
+// -------------------------
+// 🔐 Login
+// -------------------------
+async function login() {
+  await sendTelegram("🔐 Запуск новой сессии");
+
+  await page.goto("https://ais.usvisa-info.com/en-it/niv/users/sign_in", {
+    waitUntil: "domcontentloaded",
+  });
+
+  await humanize(page);
+
+  await page.fill("#user_email", EMAIL);
+  await page.waitForTimeout(500 + Math.random() * 500);
+
+  await page.fill("#user_password", PASSWORD);
+  await page.waitForTimeout(500 + Math.random() * 500);
+
+  await page.click(".icheckbox");
+
+  await Promise.all([
+    page.waitForNavigation(),
+    page.click('input[name="commit"]'),
+  ]);
+
+  await context.storageState({ path: "session.json" });
+}
+
+// -------------------------
+// 🔍 Проверка слотов
+// -------------------------
+async function checkSlots() {
+  const ok = await safeGoto(URL);
+  if (!ok) return;
+
+  // если разлогинился
+  if (page.url().includes("sign_in")) {
+    await login();
+    if(!page.url().includes('appointment'))
+      await safeGoto(URL);
+  }
+
+  await humanize(page);
+
+  try {
+    // открыть календарь
+    await page.waitForSelector("#appointments_consulate_appointment_date", {
+      timeout: 15000,
+    });
+
+    await page.click("#appointments_consulate_appointment_date");
+    await page.waitForSelector(".ui-datepicker-group");
+
+    // получить оба месяца сразу
+    const months = await page.$$eval(".ui-datepicker-group", (groups) =>
+      groups.map((group) => {
+        const month = group.querySelector(".ui-datepicker-month")?.textContent;
+        const year = group.querySelector(".ui-datepicker-year")?.textContent;
+
+        const days = Array.from(group.querySelectorAll("td a")).map((el) =>
+          el.textContent.trim(),
+        );
+
+        return { month, year, days };
+      }),
+    );
+    console.log(months, "month");
+    const validMonths = ["April", "May"];
+
+    const validSlot = months.find(
+      (m) => validMonths.includes(m.month) && m.days.length > 0,
+    );
+
+    // -------------------------
+    // 🔔 Anti-spam логика
+    // -------------------------
+    if (validSlot && lastState !== "slots") {
+      lastState = "slots";
+
+      const day = validSlot.days[0];
+
+      console.log(`🚨 SLOT FOUND: ${validSlot.month} ${day}`);
+
+      callToMain();
+
+      await sendTelegram(
+        `🚨 <b>ЕСТЬ СЛОТ!</b>\n${validSlot.month} ${day}, ${validSlot.year}`,
+      );
+    }
+
+    if (!validSlot && lastState !== "no_slots") {
+      lastState = "no_slots";
+      console.log("❌ нет подходящих дат");
+    }
+  } catch (e) {
+    console.log("⚠️ ошибка календаря:", e.message);
+  }
+}
+
+// -------------------------
+// 🚀 Init (один раз)
+// -------------------------
+async function init() {
+  browser = await chromium.launch({
+    headless: false,
+  });
+
+  context = await browser.newContext({
+    storageState: fs.existsSync("session.json") ? "session.json" : undefined,
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36",
+    viewport: { width: 1280, height: 800 },
+    locale: "en-US",
+  });
+
+  page = await context.newPage();
+}
+
+// -------------------------
+// 🔁 Loop
+// -------------------------
+async function loop() {
+  try {
+    await checkSlots();
+  } catch (e) {
+    console.log("⚠️ loop error:", e.message);
+  }
+
+  // 🔥 более "человеческий" интервал
+  let delay;
+
+  delay = (6 + Math.random() * 6) * 60 * 1000; // 6–12 мин
+
+  console.log(`⏳ ${new Date(new Date().getTime() - 4*60*60*1000).toLocaleTimeString()} следующий чек через ${Math.round(delay / 60000)} мин`);
+
+  setTimeout(loop, delay);
+}
+
+// -------------------------
+// 🛑 Graceful shutdown (PM2)
+// -------------------------
+async function shutdown() {
+  console.log("🛑 shutting down...");
+
+  try {
+    if (browser) await browser.close();
+  } catch {}
+
+  process.exit(0);
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
+
+// -------------------------
+// ▶️ Start
+// -------------------------
+await sendTelegram("🚀 <b>Бот запущен</b>");
+
+await init();
+loop();
